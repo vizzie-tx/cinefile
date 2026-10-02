@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+
+import getopt
+import sys
+import shutil
+from pathlib import Path
+import re
+from urllib.parse import urlencode
+import requests
+import yaml
+
+TOKENFILE = ".tmdbtoken"
+VIDEO_EXTS = [ ".m4v", ".avi", ".mp4", ".mkv", ".mov", ".m2ts" ]
+SUB_EXTS = [ ".srt", ".ass", ".sub", ".idx" ]
+DIR_TAGS = [ "Extras", "Trailers" ]
+JUNK_TOKENS = {
+    "1080p", "720p", "2160p", "480p",
+    "bluray", "blu-ray", "bdrip", "brrip", "dvdrip", "webrip", "webdl", "web-dl",
+    "x264", "x265", "h264", "h265", "hevc", "aac", "dts", "ac3",
+    "yify", "rarbg", "proper", "repack", "extended", "unrated",
+}
+
+def load_config():
+    candidates = (
+        Path.home() / ".filemoviesrc",
+        Path.home() / "filemoviesrc",
+        Path(__file__).resolve().parent / "filemoviesrc",
+    )
+    for config_path in candidates:
+        try:
+            contents = config_path.read_text()
+        except FileNotFoundError:
+            continue
+        config = yaml.safe_load(contents)
+        if not isinstance(config, dict):
+            raise ValueError(f"{config_path}: expected a YAML mapping")
+        for key in ("destination", "tmbdurl"):
+            if not isinstance(config.get(key), str) or not config[key].strip():
+                raise ValueError(f"{config_path}: missing or empty '{key}' setting")
+        return config
+    raise FileNotFoundError(
+        "No filemovies configuration found; tried "
+        + ", ".join(str(path) for path in candidates)
+    )
+
+
+def make_query(stem: str) -> str:
+    # Turn separators into spaces.
+    text = re.sub(r"[._'!,\[\]\(\)]+", " ", stem)
+    
+    # Split CamelCase boundaries.
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text)
+    text = re.sub(r"(?<=[A-Za-z])(?=[0-9])", " ", text)
+    text = re.sub(r"(?<=[0-9])(?=[A-Za-z])", " ", text)
+
+    words = re.sub(r"\s+", " ", text).strip().split()
+
+    # Remove common release/rip junk, but preserve possible title words.
+    cleaned = [w for w in words if w.lower() not in JUNK_TOKENS]
+
+    return " ".join(cleaned).strip()
+
+def safe_title(title: str) -> str:
+    title = title.replace("&", "and")
+    title = title.replace(":", " -")
+    title = re.sub(r'[\\/?"<>|*]+', "", title)
+    title = re.sub(r"\s+", " ", title).strip()
+    title = title.replace(" ", "_")
+    return title
+
+def main(dry_run, input_dir, output_dir, search_url):
+    tokenfile = Path.home() / TOKENFILE
+    try:
+        token = tokenfile.read_text().strip()
+    except OSError as e:
+        print(f"Unable to read TMDB token file {tokenfile}: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not token:
+        print(f"TMDB token file {tokenfile} is empty", file=sys.stderr)
+        sys.exit(1)
+    if input_dir is None:
+        input_dir = output_dir
+        
+    moviespath = Path(input_dir)
+
+    headers = {
+        "Authorization": "Bearer " + token,
+        "User-Agent": "MovieFiler/0.1 (Linux; Debian)"
+        }
+    for entry in moviespath.iterdir():
+        tag = ""
+        dirtag = ""
+        extra = False
+        kind = None
+
+        if entry.is_file():
+            if entry.suffix.lower() in VIDEO_EXTS:
+                name = entry.stem
+                ext = entry.suffix
+            elif entry.suffix.lower() in SUB_EXTS:
+                extra = True
+                ext = entry.suffix
+                if re.search(r"\.", entry.stem):
+                     name, lang = entry.stem.rsplit(".", 1)
+                     ext = f".{lang}{ext}"
+                else:
+                     name = entry.stem
+            else:
+                print(f"Skipping {entry}")
+                continue
+        elif entry.is_dir():
+            dirname = entry.name
+            endings = list(filter(dirname.endswith, DIR_TAGS))
+            if len(endings) == 1:
+                name = dirname.removesuffix(endings[0])
+                ext = ""
+                kind = endings[0].lower()
+            else:
+                print(f"Skipping {entry}")
+                continue
+        else:
+            print(f"Skipping {entry}")
+            continue
+                
+	
+        if name.endswith("]"):
+            tagcheck = re.compile("(.*)(\\[[^\\[\\]]*\\])")
+            if match := tagcheck.match(name):
+                tag = "_" + match.groups()[1]
+                dirtag = "_" + match.groups()[1]
+                name = match.groups()[0]
+            else:
+                print("Warning: Unmatched ] at end of filename")
+        if name.endswith("}"):
+            tagcheck = re.compile("(.*)\\{([^\\{\\}]*)\\}")
+            if match := tagcheck.match(name):
+                tag = " - " + match.groups()[1]
+                name = match.groups()[0]
+        searchstr = make_query(name)
+
+        searchdict = {
+            "query": searchstr
+            }
+
+        result_list = []
+        try:
+            response = requests.get(search_url,
+                                    headers=headers,
+                                    params=searchdict,
+                                    timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            for result in data.get("results", []):
+                title = result.get("title", "")
+                release_date = result.get("release_date", None)
+                year = release_date[:4] if release_date else "????"
+                id = result.get("id", "")
+                result_list.append((title, year, id,))
+
+        except requests.RequestException as e:
+            print(f"TMDB request failed for {entry.name}: {e}")
+            continue
+        theresult = None
+        if len(result_list) == 1:
+            theresult = result_list[0]
+        elif len(result_list) > 0:
+            print(f"File: {entry}")
+            shown = result_list[:10]
+            for n, res in enumerate(shown):
+                print(f"{n}: {res}")
+            resp = input("Selection? ")
+            if resp.isdigit():
+                val = int(resp)
+                if val >= 0 and val < len(shown):
+                    theresult = shown[val]
+        else:
+            print(f"No results found for file {entry}")
+            print(f"search string was {searchstr}")
+            _ = input("Press Enter to continue")
+        if theresult:
+            title, year, id = theresult
+            title = safe_title(title)
+
+            base = f"{title}_({year})"
+            base = f"{base}_[tmdbid-{id}]" if id else base
+            if kind:
+                dest = Path(output_dir) / f"{base}{dirtag}" / kind
+            else:
+                dest = Path(output_dir) / f"{base}{dirtag}" / f"{base}{tag}{ext}"
+
+            if (extra or kind) and not dest.parent.exists():
+                print(f"Skipping rename of {entry} to {dest}: Unparented extra")
+                continue
+
+            print(f"Renaming {entry} to {dest}")
+            if not dry_run:
+                if dest.exists():
+                    print(f"Refusing to overwrite existing file {dest}")
+                    continue
+
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(entry), str(dest))
+                
+def usage():
+    print("usage: filemovies [opts]")
+    print("  Refile movies based on TMDB lookup into canonical locations.")
+    print("  Only direct children of input (or output if filing in-place)")
+    print("  directory are considered.")
+    print("Options:")
+    print("  -h, --help - print this help")
+    print("  -n, --dry-run - dry run, do not rename files")
+    print("  -i <dir>, --input - Specify separated input directory")
+    print("                      Defaults to output unless specified")
+    print("  -o <dir>, --output - Set output directory")
+    print("                       defaults to destination in filemoviesrc")
+
+    exit(1)
+    
+if __name__ == '__main__':
+    dry_run = False
+    
+    try:
+        # sys.argv[1:] filters out the script name itself
+        opts, args = getopt.getopt(sys.argv[1:], "hni:o:", ["help", "dry-run", "input=", "output="])
+    except getopt.GetoptError as err:
+        # Logs the parsing error (e.g. passed an invalid flag)
+        print(f"Error: {err}")
+        usage()
+        sys.exit(2)
+    if args:
+        print(f"Unexpected positional arguments: {' '.join(args)}")
+        usage()
+        sys.exit(2)
+
+    output_dir = None
+    input_dir = None
+    
+    for opt,arg in opts:
+        if opt in ("-h", "--help"):
+            usage()
+        elif opt in ("-n", "--dry-run"):
+            print("Dry run, not moving files")
+            dry_run = True;
+        elif opt in ("-o", "--output"):
+            output_dir = arg
+        elif opt in ("-i", "--input"):
+            input_dir = arg
+            
+    try:
+        config = load_config()
+    except (OSError, ValueError, yaml.YAMLError) as err:
+        print(f"Unable to load filemovies configuration: {err}", file=sys.stderr)
+        sys.exit(1)
+    if output_dir is None:
+        output_dir = Path(config["destination"]).expanduser()
+    main(dry_run, input_dir, output_dir, config["tmbdurl"])

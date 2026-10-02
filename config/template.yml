@@ -1,0 +1,23 @@
+---
+title:
+location: /movies/discs/XXXX
+dest: /movies/incoming
+subtitledest: /movies/subtitles
+defaults:
+ preset: "General/Fast 1080p30"
+ audio: "1:stereomix"
+tracks:
+ - title:
+   category: feature
+   audio:
+   mpls:
+   subtitle: en
+   runtime:
+ - title:
+   category: extras
+   name:
+   runtime:
+ - title:
+   category: trailers
+   name:
+   runtime:

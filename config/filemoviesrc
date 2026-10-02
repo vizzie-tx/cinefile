@@ -1,0 +1,2 @@
+destination: /movies/library
+tmbdurl: https://api.themoviedb.org/3/search/movie
