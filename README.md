@@ -65,7 +65,15 @@ a menu for selecting a match.
 
 Read HandBrakeCLI scan output containing a `JSON Title Set:` marker from standard
 input. `table.sh` produces a table; `title.sh` selects a title by number or MPLS
-filename and produces JSON. See the current playlist-filter limitation below.
+filename and produces one compact JSON object per matching title. MPLS filename
+matching is case-insensitive; missing or non-string playlist values are ignored
+for filename searches. Title-number searches work regardless of playlist type.
+No match produces no output.
+
+```bash
+title.sh 2 < scan.log
+title.sh 00800.mpls < scan.log
+```
 
 ## Ripping workflow
 
@@ -155,8 +163,6 @@ moves files and refuses to overwrite an existing destination.
 
 - Configuration validation and error handling are incomplete. Templates require
   manual editing before use, and invalid values can produce tracebacks.
-- `title.sh` currently has a playlist-filter bug that can cause jq errors for MPLS
-  searches and when a numeric search encounters a different title.
 - `filemovies` does not currently recognize `.sup` subtitles, although the ripping
   scripts can produce them. Those files are skipped and need separate handling.
 - Subtitle files and extras are only filed when the destination movie directory

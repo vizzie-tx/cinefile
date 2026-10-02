@@ -19,10 +19,10 @@ found { print; next }
 
   # Walk through the master Title list
   .TitleList[] 
-  # Strict type-checking rules protect the string engine from dropping an explode crash
+  # Only string playlists can match an MPLS filename.
   | select(
       (.Index | tostring) == $target or 
-      (.Playlist | type == "string" and (.Playlist | ascii_downcase) == $target)
+      (.Playlist | if type == "string" then ascii_downcase == $target else false end)
     )
   | ( (.Duration.Hours // 0) * 3600 + (.Duration.Minutes // 0) * 60 + (.Duration.Seconds // 0) ) as $total 
 
