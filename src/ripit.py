@@ -111,7 +111,7 @@ def build_subtitle_command(dest, config, track):
         "100",
         "-w",
         "100",
-        "-audio",
+        "--audio",
         "none",
         "--encoder-preset",
         "ultrafast",
@@ -182,6 +182,7 @@ def rip_track(dest, config, track, phases):
     category = track.get("category", "")
 
     status = []
+    exitcode = 0
     
     dest.parent.mkdir(parents=True, exist_ok=True)
 
